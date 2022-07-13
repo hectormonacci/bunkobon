@@ -1,5 +1,4 @@
 # bunkobon
-Impone un PDF tamaño A6 en un PDF tamaño A4 con pliegos de 16 páginas A6
 
 Recibe un PDF secuencial en tamaño A6, entrega un PDF A4 con
 las páginas A6 impuestas para encuadernar en pliegos de 16
