@@ -1,0 +1,231 @@
+#!/bin/bash
+
+# Recibe un PDF secuencial en tamaño A6, entrega un PDF A4 con
+# las páginas A6 impuestas para encuadernar en pliegos de 16
+# páginas A6.
+
+# Ejemplo: bunkobon input.pdf (produce input-bunkobon.pdf)
+
+# Alternativas que probé, no 100% satisfactorias:
+# 1. En PERL, sudo cpan install Perl::PDF::Imposition
+#    pdf-impose.pl --schema ea4x4 --paper a6 1842-gogol-capote.pdf
+#    [no elimina las hojas en blanco al final]
+# 2. En PYTHON, sudo pip install pdfimpose (inspirado en el anterior)
+#    pdfimpose perfect -s 2x2 1842-gogol-capote.pdf
+#    [pliegos de 8 páginas, y papel resultante 210 x 296 mm]
+# 3. En JAVA, bookbinder (GUI, parece abandonado, sin output)
+# 4. En C++, podofoimpose (no me funciona el "Plan" que encontré)
+# 5. En PYTHON, pdfbook2 (sólo hace 2up y no sabe reordenar pliegos)
+# 6. En PERL, pdfbklt (se queja de xref mal formado en input)
+
+# Alternativas que no probé:
+# 1. bookletcreator.com (pago, GUI, Mac y Win)
+
+# Nuestro bunkobon:
+# Sólo dos dependencias: pdftk y pdfjam (que implica LaTeX)
+
+################################################################
+# Copyright 2022 Héctor M. Monacci
+
+# Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+# 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+# 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+################################################################
+
+set -u
+
+pdf_origen="${1:-INEXISTENTE}"
+
+# Tamaños de páginas ISO en puntos (72 = una pulgada)
+# A4_w_in_pts='595.276'
+# A4_h_in_pts='841.890'
+# A5_w_in_pts='419.528'
+# A5_h_in_pts='595.276'
+  A6_w_in_pts='297.638'
+  A6_h_in_pts='419.528'
+# A7_w_in_pts='209.764'
+# A7_h_in_pts='297.638'
+
+# Esperamos los valores de A6 como input
+w_in_pts="$A6_w_in_pts"
+h_in_pts="$A6_h_in_pts"
+
+alertar_y_salir() {
+	printf "\nALERTA\n\n%s\n" "$1"
+	exit
+}
+
+verificar_ejecutables() {
+	local ejecutables_necesarios=(
+	pdfjam
+	pdftk
+	)
+	for i in "${ejecutables_necesarios[@]}"; do
+		if [[ ! -x $(command -v "$i") ]]; then
+			alertar_y_salir "El programa $i no está disponible.\nInstálelo y reintente."
+		fi
+	done
+}
+
+verificar_input_existe() {
+	if [[ ! -f $pdf_origen ]]; then
+		alertar_y_salir "No existe archivo PDF a procesar."
+	fi
+}
+
+verificar_input_es_PDF() {
+	local tipo
+	tipo=$(file "$pdf_origen" | cut -d' ' -f 2)
+	if [[ $tipo != 'PDF' ]] ; then
+		alertar_y_salir "Archivo a procesar ($pdf_origen) no es de tipo PDF."
+	fi
+}
+
+verificar_PDF_input() {
+	local x
+	x=$(pdftk "$pdf_origen" dumpdata)
+	verificar_input_es_A6
+	verificar_input_es_multipagina
+}
+
+verificar_input_es_A6() {
+	local page_size
+	page_size=$(grep -m 1 "PageMediaRect:" <<< "$x" | cut -d' ' -f 4-5)
+	if [[ $page_size != "$w_in_pts $h_in_pts" ]]; then
+		alertar_y_salir "El PDF a procesar no es de tamaño A6."
+	fi
+}
+
+verificar_input_es_multipagina() {
+	cuantas_pag_input=$(grep -m 1 "NumberOfPages:" <<< "$x" | grep -Eo '[0-9]+')
+	if (( cuantas_pag_input < 1 )); then
+		alertar_y_salir "El PDF a procesar no tiene suficientes páginas."
+	fi
+}
+
+# Crea PDFs vacíos temporales que se usan al rellenar el original y reordenarlo
+crear_pdfs_vacios_temporales() {
+	pdf_tmp_gordo=$(mktemp --suffix '.pdf')
+	pdf_tmp_reord=$(mktemp --suffix '.pdf')
+	pdf_tmp_blank=$(mktemp --suffix '.pdf')
+}
+
+# Crea a partir del PDF A6 input un PDF A6 engordado, que lleva agregadas
+# (si hace falta) suficientes páginas en blanco para tener un múltiplo de 16
+# (es decir, para completar el último pliego con vistas al reordenamiento)
+crear_pdf_tmp_A6_gordo() {
+	local relleno_16
+	local blanks=()
+	if (( cuantas_pag_input % 16 > 0 )); then
+		crear_pdf_blank
+		(( relleno_16 = 16 - cuantas_pag_input % 16 ))
+		for (( i = 0; i < relleno_16; i++ )); do
+			blanks+=("B")
+		done
+		pdftk A="$pdf_origen" B="$pdf_tmp_blank" cat A "${blanks[@]}" \
+			output "$pdf_tmp_gordo"
+		(( cuantas_pag_gordo = cuantas_pag_input + relleno_16 ))
+	else
+		cp -- "$pdf_origen" "$pdf_tmp_gordo"
+		(( cuantas_pag_gordo = cuantas_pag_input ))
+	fi
+}
+
+crear_pdf_blank() {
+	cat > "$pdf_tmp_blank" <<- LISTO
+	%PDF-1.4
+	1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+	2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj
+	3 0 obj<</Type/Page/MediaBox[0 0 $w_in_pts $h_in_pts]
+	/Parent 2 0 R/Resources<<>>>>endobj
+	xref
+	0 4
+	0000000000 65535 f 
+	0000000009 00000 n 
+	0000000052 00000 n 
+	0000000101 00000 n 
+	trailer<</Size 4/Root 1 0 R>>
+	startxref
+	187
+	%%EOF
+	LISTO
+}
+
+# Reordena las páginas A6 en el orden en que deben imponerse sobre A4,
+# suponiendo que se arman como pliegos de 16 páginas A6 (4 páginas A4),
+# y pone patas arriba las páginas que se imprimen en la parte baja de la hoja
+crear_pdf_tmp_A6_reordenado() {
+	local cuantos_pliegos
+	local orden_magico_total
+	local page_num
+	local orden_magico=(
+		16 1     # F F
+		13 4     # T T: irán sɐʇɐd arriba
+	
+		 2 15    # F F
+		 3 14    # T T: irán sɐʇɐd arriba
+	
+		12 5     # F F
+		 9 8     # T T: irán sɐʇɐd arriba
+	
+		 6 11    # F F
+		 7 10    # T T: irán sɐʇɐd arriba
+	)
+	local accum=0
+
+	(( cuantos_pliegos = cuantas_pag_gordo / 16 ))
+	for (( i = 0; i < cuantos_pliegos; i++ )); do
+		for o in "${orden_magico[@]}"; do
+			(( page_num = o + 16 * i ))
+			if (( accum++ % 4 > 1 )) ; then # F F, T T, F F, T T...
+				orden_magico_total+=("${page_num}south")
+			else
+				orden_magico_total+=("${page_num}")
+			fi
+		done
+	done
+	pdftk "$pdf_tmp_gordo" cat "${orden_magico_total[@]}" output "$pdf_tmp_reord"
+}
+
+# Crea PDF final en tamaño A4 con las páginas A6 impuestas 2x2,
+# pero sin las páginas A6 en blanco agregadas que, al reordenar, hayan
+# quedado después de la última página A6 recibida en $pdf_origen.
+# Acá en pdfjam se consume el 90% del tiempo de ejecución.
+crear_pdf_final_A6_impuestas_sobre_A4() {
+	local relleno
+	local ultima_recibida
+	local offset_ultima_x_relleno=(0 1 2 3 4 5 6 6 7 8 7 5 4 4 3 1) # Empírico, sabroso!
+	
+	(( relleno = cuantas_pag_gordo - cuantas_pag_input ))
+	(( ultima_recibida = cuantas_pag_input + offset_ultima_x_relleno[relleno] ))
+
+	pdfjam --quiet --vanilla --frame false --no-keepinfo --paper a4paper --nup 2x2 \
+		--no-checkfiles --runs 1 --outfile "${pdf_origen%.pdf}-bunkobon.pdf" -- \
+		"$pdf_tmp_reord" 1-"$ultima_recibida"
+}
+
+borrar_archivos_auxiliares() {
+	rm -f -- "$pdf_tmp_gordo" "$pdf_tmp_reord" "$pdf_tmp_blank"
+}
+
+verificar_input_existe
+
+verificar_input_es_PDF
+
+verificar_PDF_input
+
+verificar_ejecutables
+
+crear_pdfs_vacios_temporales
+
+crear_pdf_tmp_A6_gordo
+
+crear_pdf_tmp_A6_reordenado
+
+crear_pdf_final_A6_impuestas_sobre_A4
+
+borrar_archivos_auxiliares
