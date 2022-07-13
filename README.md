@@ -9,11 +9,11 @@ Ejemplo: ```bunkobon input.pdf``` (produce input-bunkobon.pdf)
 ## Alternativas que probé, no 100% satisfactorias:
 
 1. En PERL, instalar con ```sudo cpan install Perl::PDF::Imposition```
-   y usar con ```pdf-impose.pl --schema ea4x4 --paper a6 1842-gogol-capote.pdf```
+   y usar con ```pdf-impose.pl --schema ea4x4 --paper a6 input.pdf```
    [no elimina las hojas en blanco al final]
 
 2. En PYTHON, instalar con ```sudo pip install pdfimpose``` (inspirado en el anterior)
-   y usar con ```pdfimpose perfect -s 2x2 1842-gogol-capote.pdf```
+   y usar con ```pdfimpose perfect -s 2x2 input.pdf```
    [pliegos de 8 páginas, y papel resultante 210 x 296 mm]
 
 3. En JAVA, bookbinder (GUI, parece abandonado, sin output)
